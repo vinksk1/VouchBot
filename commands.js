@@ -126,13 +126,17 @@ async function handleGuildCreate(guild, client, notificationChannelId, thumbnail
 }
 
 async function updateStickyMessage(channel, client, thumbnailUrl) {
-  if (!channel?.isTextBased() || !hasPermissions(channel, client, [PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ManageMessages])) return;
+  if (!channel?.isTextBased() || !hasPermissions(channel, client, [PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ManageMessages])) {
+    console.error(`Insufficient permissions or invalid channel for ${channel?.id}`);
+    return;
+  }
 
   const previousStickyId = stickyMessages.get(channel.id);
   if (previousStickyId) {
     try {
       const previousMessage = await channel.messages.fetch(previousStickyId).catch(() => null);
-      if (previousMessage) await previousMessage.delete();
+      if (previousMessage) await previousMessage.unpin().catch(() => {});
+      await previousMessage?.delete().catch(() => {});
     } catch (error) {
       console.error('Error deleting previous sticky message:', error.message);
     }
@@ -156,31 +160,42 @@ async function updateStickyMessage(channel, client, thumbnailUrl) {
     const stickyMessage = await safeSend(channel, { embeds: [stickyEmbed] }, client, thumbnailUrl);
     if (stickyMessage) {
       stickyMessages.set(channel.id, stickyMessage.id);
+      await stickyMessage.pin().catch(error => console.error('Error pinning sticky message:', error.message));
     }
   } catch (error) {
     console.error('Error posting sticky message:', error.message);
   }
 }
 
+async function initializeStickyMessages(client, allowedChannelIds, thumbnailUrl) {
+  for (const channelId of allowedChannelIds) {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (channel && hasPermissions(channel, client, [PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ManageMessages])) {
+      await updateStickyMessage(channel, client, thumbnailUrl);
+    } else {
+      console.error(`Failed to initialize sticky message for channel ${channelId}: Insufficient permissions or channel not found`);
+    }
+  }
+}
+
 async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds, notificationChannelId, logChannelId, vouchCooldownSeconds, thumbnailUrl) {
   if (message.author.bot) return;
 
-  const commands = ['vouch', 'vouchgive', 'vouches', 'vouchhistory', 'vouchremove', 'vouchstats', 'vouchleaderboard', 'vouchsearch', 'vouchtransfer', 'restorevouches', 'help', 'koala'];
   let command = message.content.toLowerCase().trim();
+  const commands = ['vouch', 'vouchgive', 'vouches', 'vouchhistory', 'vouchremove', 'vouchstats', 'vouchleaderboard', 'vouchsearch', 'vouchtransfer', 'restorevouches', 'help', 'koala'];
   if (command.startsWith('!')) command = command.slice(1).split(/\s+/)[0];
-  else command = commands.find(cmd => command === cmd || command.startsWith(`${cmd} `)) || '';
-  let args = command ? message.content.slice(command.length + (message.content.startsWith('!') ? 1 : 0)).trim().split(/\s+/) : [];
+  else if (command.endsWith('!')) command = command.slice(0, -1);
+  else command = commands.find(cmd => command === cmd || command.startsWith(`${cmd} `) || command.endsWith(` ${cmd}`)) || '';
 
-  if (allowedChannelIds.includes(message.channel.id)) {
-    await updateStickyMessage(message.channel, client, thumbnailUrl);
-  }
+  let args = command ? message.content.replace(/!vouch/g, '!vouch').replace(/vouch!/g, '!vouch').trim().split(/\s+/) : [];
+  if (command && args[0] === '') args.shift();
 
   if (!commands.includes(command)) return;
   if (!allowedChannelIds.includes(message.channel.id) && !ownerIds.includes(message.author.id)) return;
 
   const cooldown = isOnCooldown(message.author.id, command);
   if (cooldown) {
-    return await safeReply(message, {
+    await safeReply(message, {
       embeds: [
         new EmbedBuilder()
           .setTitle('Cooldown')
@@ -190,6 +205,8 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           .setThumbnail(validateThumbnailUrl(thumbnailUrl))
       ]
     }, client, thumbnailUrl);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    return;
   }
 
   const thumbnail = validateThumbnailUrl(thumbnailUrl) || 'https://media.discordapp.net/attachments/1205060939284742175/1386627897636421854/E20FEA31-D28A-4370-B06B-BFABD8ACE473.gif?ex=685a655d&is=685913dd&hm=75b63af509452e259c4f64f25af6f90ce1b26059e80c54575f948275df7170a3&=';
@@ -207,7 +224,9 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       .setColor('#00AA00')
       .setFooter({ text: 'Bawal kupal dito.' })
       .setThumbnail(validateThumbnailUrl(thumbnailUrl));
-    return await safeReply(message, { embeds: [koalaEmbed] }, client, thumbnail);
+    await safeReply(message, { embeds: [koalaEmbed] }, client, thumbnail);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    return;
   }
 
   if (command === 'help') {
@@ -244,7 +263,9 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       .setColor('#0099FF')
       .setFooter({ text: 'Need more help? Contact the bot owner' })
       .setThumbnail(validateThumbnailUrl(thumbnailUrl));
-    return await safeReply(message, { embeds: [helpEmbed] }, client, thumbnail);
+    await safeReply(message, { embeds: [helpEmbed] }, client, thumbnail);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    return;
   }
 
   if (command === 'vouch') {
@@ -258,6 +279,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         .setThumbnail(validateThumbnailUrl(thumbnailUrl));
       await safeReply(message, { embeds: [embed] }, client, thumbnail);
       await message.react('❌');
+      await new Promise(resolve => setTimeout(resolve, 500));
       return;
     }
 
@@ -279,6 +301,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             ]
           }, client, thumbnail);
           await message.react('❌');
+          await new Promise(resolve => setTimeout(resolve, 500));
           return;
         }
         args.shift();
@@ -293,6 +316,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           ]
         }, client, thumbnail);
         await message.react('❌');
+        await new Promise(resolve => setTimeout(resolve, 500));
         return;
       }
     } else {
@@ -306,6 +330,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         ]
       }, client, thumbnail);
       await message.react('❌');
+      await new Promise(resolve => setTimeout(resolve, 500));
       return;
     }
 
@@ -320,6 +345,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         ]
       }, client, thumbnail);
       await message.react('❌');
+      await new Promise(resolve => setTimeout(resolve, 500));
       return;
     }
 
@@ -337,6 +363,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         ]
       }, client, thumbnail);
       await message.react('❌');
+      await new Promise(resolve => setTimeout(resolve, 500));
       return;
     }
 
@@ -358,6 +385,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             ]
           }, client, thumbnail);
           await message.react('❌');
+          await new Promise(resolve => setTimeout(resolve, 500));
           return;
         }
       }
@@ -402,6 +430,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         }, client, thumbnail);
       }
       await message.react('✅');
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouch error:', error.message);
       await safeReply(message, {
@@ -414,13 +443,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         ]
       }, client, thumbnail);
       await message.react('❌');
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
 
   if (command === 'vouchgive') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, {
+      await safeReply(message, {
         embeds: [
           new EmbedBuilder()
             .setTitle('Permission Error')
@@ -429,10 +459,12 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     if (args.length < 3) {
-      return await safeReply(message, {
+      await safeReply(message, {
         embeds: [
           new EmbedBuilder()
             .setTitle('Usage Error')
@@ -441,6 +473,8 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     let user;
@@ -452,17 +486,29 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         user = await client.users.fetch(args[0]);
         args.shift();
       } catch {
-        return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
       }
     } else {
-      return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Please mention a user or provide a valid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Please mention a user or provide a valid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     const vouchCount = parseInt(args[0]);
-    if (isNaN(vouchCount) || vouchCount < 1 || vouchCount > 1000) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Vouch count must be 1-1000.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+    if (isNaN(vouchCount) || vouchCount < 1 || vouchCount > 1000) {
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Vouch count must be 1-1000.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
+    }
 
     const vouchMessage = args.slice(1).join(' ').substring(0, 500);
-    if (!vouchMessage) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Message must be under 500 characters.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+    if (!vouchMessage) {
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Message must be under 500 characters.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
+    }
 
     try {
       const timestamp = new Date();
@@ -506,6 +552,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           ]
         }, client, thumbnail);
       }
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouchgive error:', error.message);
       await safeReply(message, {
@@ -517,6 +564,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
@@ -529,7 +577,9 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       try {
         user = await client.users.fetch(args[0]);
       } catch {
-        return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
       }
     } else {
       user = message.author;
@@ -537,7 +587,11 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
 
     try {
       const vouches = await Vouch.find({ userId: user.id, deleted: false }).sort({ timestamp: -1 });
-      if (vouches.length === 0) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${user.tag} has no vouches.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (vouches.length === 0) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${user.tag} has no vouches.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const count = await Vouch.countDocuments({ userId: user.id, deleted: false });
       const latestVouch = vouches[0];
@@ -555,6 +609,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         .setThumbnail(validateThumbnailUrl(thumbnailUrl));
       
       await safeReply(message, { embeds: [embed] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouches error:', error.message);
       await safeReply(message, {
@@ -566,6 +621,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
@@ -578,22 +634,38 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       try {
         user = await client.users.fetch(args[0]);
       } catch {
-        return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
       }
     } else {
-      return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Usage Error').setDescription(`Usage: !vouchhistory <@user|userID> [page]`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Usage Error').setDescription(`Usage: !vouchhistory <@user|userID> [page]`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     try {
       const vouches = await Vouch.find({ userId: user.id, deleted: false }).sort({ timestamp: -1 });
-      if (vouches.length === 0) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${user.tag} has no vouch history.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (vouches.length === 0) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${user.tag} has no vouch history.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const page = parseInt(args[1]) || 1;
-      if (page < 1) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page number must be 1 or greater.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (page < 1) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page number must be 1 or greater.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const itemsPerPage = 5;
       const totalPages = Math.ceil(vouches.length / itemsPerPage);
-      if (page > totalPages) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page must be 1-${totalPages}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (page > totalPages) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page must be 1-${totalPages}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const generateEmbed = async (items, currentPage, totalPages) => {
         const start = (currentPage - 1) * itemsPerPage;
@@ -615,6 +687,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       };
 
       await setupPagination(message, await generateEmbed(vouches, page, totalPages), vouches, itemsPerPage, generateEmbed, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouchhistory error:', error.message);
       await safeReply(message, {
@@ -626,13 +699,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
 
   if (command === 'vouchremove') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, {
+      await safeReply(message, {
         embeds: [
           new EmbedBuilder()
             .setTitle('Permission Error')
@@ -641,6 +715,8 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     let user;
@@ -650,10 +726,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       try {
         user = await client.users.fetch(args[0]);
       } catch {
-        return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Invalid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
       }
     } else {
-      return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Usage Error').setDescription(`Usage: !vouchremove <@user|userID>`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Usage Error').setDescription(`Usage: !vouchremove <@user|userID>`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     try {
@@ -662,7 +742,11 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         { $set: { deleted: true } }
       );
 
-      if (result.modifiedCount === 0) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${user.tag} has no vouches to remove.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (result.modifiedCount === 0) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${user.tag} has no vouches to remove.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const embed = new EmbedBuilder()
         .setTitle('Vouch Removal')
@@ -684,6 +768,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           ]
         }, client, thumbnail);
       }
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouchremove error:', error.message);
       await safeReply(message, {
@@ -695,6 +780,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
@@ -736,6 +822,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       }
 
       await safeReply(message, { embeds: [embed] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouchstats error:', error.message);
       await safeReply(message, {
@@ -747,6 +834,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
@@ -760,14 +848,26 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         { $limit: 50 }
       ]);
 
-      if (topUsers.length === 0) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Data').setDescription(`No vouches found.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (topUsers.length === 0) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Data').setDescription(`No vouches found.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const page = parseInt(args[0]) || 1;
-      if (page < 1) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page number must be 1 or greater.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (page < 1) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page number must be 1 or greater.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const itemsPerPage = 10;
       const totalPages = Math.ceil(topUsers.length / itemsPerPage);
-      if (page > totalPages) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page must be 1-${totalPages}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (page > totalPages) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page must be 1-${totalPages}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const generateEmbed = async (users, currentPage, totalPages) => {
         const start = (currentPage - 1) * itemsPerPage;
@@ -785,6 +885,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       };
 
       await setupPagination(message, await generateEmbed(topUsers, page, totalPages), topUsers, itemsPerPage, generateEmbed, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouchleaderboard error:', error.message);
       await safeReply(message, {
@@ -796,13 +897,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
 
   if (command === 'vouchsearch') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, {
+      await safeReply(message, {
         embeds: [
           new EmbedBuilder()
             .setTitle('Permission Error')
@@ -811,6 +913,8 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     let user = message.mentions.users.first();
@@ -823,8 +927,16 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       keyword = user ? args.slice(1, -1).join(' ') : args.slice(0, -1).join(' ');
     }
 
-    if (!keyword) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Usage Error').setDescription(`Usage: !vouchsearch [@user] keyword [page]`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
-    if (page < 1) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page number must be 1 or greater.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+    if (!keyword) {
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Usage Error').setDescription(`Usage: !vouchsearch [@user] keyword [page]`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
+    }
+    if (page < 1) {
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page number must be 1 or greater.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
+    }
 
     try {
       const query = user 
@@ -832,11 +944,19 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         : { message: { $regex: keyword, $options: 'i' }, deleted: false };
 
       const vouches = await Vouch.find(query).sort({ timestamp: -1 });
-      if (vouches.length === 0) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Results').setDescription(`No vouches found for "${keyword}"${user ? ` for ${user.tag}` : ''}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (vouches.length === 0) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Results').setDescription(`No vouches found for "${keyword}"${user ? ` for ${user.tag}` : ''}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const itemsPerPage = 5;
       const totalPages = Math.ceil(vouches.length / itemsPerPage);
-      if (page > totalPages) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page must be 1-${totalPages}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (page > totalPages) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Page must be 1-${totalPages}.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const generateEmbed = async (items, currentPage, totalPages) => {
         const start = (currentPage - 1) * itemsPerPage;
@@ -861,6 +981,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       };
 
       await setupPagination(message, await generateEmbed(vouches, page, totalPages), vouches, itemsPerPage, generateEmbed, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouchsearch error:', error.message);
       await safeReply(message, {
@@ -872,13 +993,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
 
   if (command === 'vouchtransfer') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, {
+      await safeReply(message, {
         embeds: [
           new EmbedBuilder()
             .setTitle('Permission Error')
@@ -887,10 +1009,12 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     if (message.mentions.users.size < 2) {
-      return await safeReply(message, {
+      await safeReply(message, {
         embeds: [
           new EmbedBuilder()
             .setTitle('Usage Error')
@@ -899,15 +1023,25 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
     const sourceUser = message.mentions.users.first();
     const targetUser = message.mentions.users.at(1);
-    if (sourceUser.id === targetUser.id) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Source and target users must be different.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+    if (sourceUser.id === targetUser.id) {
+      await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Source and target users must be different.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
+    }
 
     try {
       const count = await Vouch.countDocuments({ userId: sourceUser.id, deleted: false });
-      if (count === 0) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${sourceUser.tag} has no vouches to transfer.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+      if (count === 0) {
+        await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${sourceUser.tag} has no vouches to transfer.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return;
+      }
 
       const result = await Vouch.updateMany(
         { userId: sourceUser.id, deleted: false },
@@ -947,6 +1081,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           ]
         }, client, thumbnail);
       }
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.error('Vouchtransfer error:', error.message);
       await safeReply(message, {
@@ -958,6 +1093,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
             .setThumbnail(validateThumbnailUrl(thumbnailUrl))
         ]
       }, client, thumbnail);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     return;
   }
@@ -968,5 +1104,6 @@ module.exports = {
   safeReply, 
   setupPagination, 
   handleGuildCreate, 
-  handleMessage 
+  handleMessage, 
+  initializeStickyMessages 
 };
