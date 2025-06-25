@@ -20,7 +20,7 @@ const Vouch = mongoose.model('Vouch', vouchSchema);
 async function initializeDatabase() {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 30000,
       heartbeatFrequencyMS: 10000
     });
     console.log(`MongoDB connected`);

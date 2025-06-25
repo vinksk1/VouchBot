@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits } = require('discord.js');
-const { handleGuildCreate, handleMessage } = require('./commands');
+const { handleGuildCreate, handleMessage, initializeStickyMessages } = require('./commands');
 const { initializeDatabase, Vouch } = require('./database');
 
 const client = new Client({
@@ -16,7 +16,13 @@ initializeDatabase().then(() => {
   client.login(process.env.TOKEN).catch(err => console.error('Login failed:', err.message));
 }).catch(err => console.error('Database initialization failed:', err.message));
 
-client.once('ready', () => console.log(`Logged in as ${client.user.tag}`));
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  const allowedChannelIds = process.env.ALLOWED_CHANNEL_IDS ? process.env.ALLOWED_CHANNEL_IDS.split(',') : [];
+  initializeStickyMessages(client, allowedChannelIds, process.env.THUMBNAIL_URL).catch(err =>
+    console.error('Failed to initialize sticky messages:', err.message)
+  );
+});
 
 client.on('guildCreate', guild => handleGuildCreate(guild, client, process.env.NOTIFICATION_CHANNEL_ID, process.env.THUMBNAIL_URL));
 
