@@ -28,7 +28,7 @@ client.on('messageCreate', message => handleMessage(
   process.env.OWNER_IDS ? process.env.OWNER_IDS.split(',') : [],
   process.env.NOTIFICATION_CHANNEL_ID,
   process.env.LOG_CHANNEL_ID,
-  parseInt(process.env.VOUCH_COOLDOWN_SECONDS) || 86400,
+  parseInt(process.env.VOUCH_COOLDOWN_SECONDS) || 600,
   process.env.THUMBNAIL_URL
 ));
 

@@ -5,15 +5,4 @@ function generateVouchId() {
   });
 }
 
-function generateStars(points) {
-  const flooredRating = Math.floor(Math.max(0, Math.min(5, points / 100)));
-  return '★'.repeat(flooredRating) + '☆'.repeat(5 - flooredRating);
-}
-
-function calculateRating(totalPoints, count) {
-  if (count === 0) return 0;
-  const maxPoints = Math.min(100, count) * 5;
-  return ((totalPoints / maxPoints) * 5).toFixed(2);
-}
-
-module.exports = { generateVouchId, generateStars, calculateRating };
+module.exports = { generateVouchId };

@@ -1,9 +1,10 @@
 require('dotenv').config();
 const { EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionsBitField } = require('discord.js');
-const { generateVouchId, generateStars } = require('./utils');
+const { generateVouchId } = require('./utils');
 const { v4: uuidv4 } = require('uuid');
 
 const cooldowns = new Map();
+const stickyMessages = new Map();
 
 function generateGuid() {
   return uuidv4();
@@ -124,26 +125,70 @@ async function handleGuildCreate(guild, client, notificationChannelId, thumbnail
     .setTimestamp();
 }
 
+async function updateStickyMessage(channel, client, thumbnailUrl) {
+  if (!channel?.isTextBased() || !hasPermissions(channel, client, [PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ManageMessages])) return;
+
+  const previousStickyId = stickyMessages.get(channel.id);
+  if (previousStickyId) {
+    try {
+      const previousMessage = await channel.messages.fetch(previousStickyId).catch(() => null);
+      if (previousMessage) await previousMessage.delete();
+    } catch (error) {
+      console.error('Error deleting previous sticky message:', error.message);
+    }
+  }
+
+  const stickyEmbed = new EmbedBuilder()
+    .setTitle('📜 Vouch Guide')
+    .setDescription(
+      'To vouch for someone, use this format:\n' +
+      '`!vouch @user [message]` (Proof/Screenshot Required)\n' +
+      '- `@user`: Mention the user you\'re vouching for\n' +
+      '- `[message]`: Optional comment (max 500 chars)\n' +
+      '- Attach a screenshot/proof\n' +
+      'Example: `!vouch @Koala Trusted gwapo sarap kalami.` (with screenshot)'
+    )
+    .setColor('#0099FF')
+    .setFooter({ text: 'Koala Vouch Bot' })
+    .setThumbnail(validateThumbnailUrl(thumbnailUrl));
+
+  try {
+    const stickyMessage = await safeSend(channel, { embeds: [stickyEmbed] }, client, thumbnailUrl);
+    if (stickyMessage) {
+      stickyMessages.set(channel.id, stickyMessage.id);
+    }
+  } catch (error) {
+    console.error('Error posting sticky message:', error.message);
+  }
+}
+
 async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds, notificationChannelId, logChannelId, vouchCooldownSeconds, thumbnailUrl) {
   if (message.author.bot) return;
+
   const commands = ['vouch', 'vouchgive', 'vouches', 'vouchhistory', 'vouchremove', 'vouchstats', 'vouchleaderboard', 'vouchsearch', 'vouchtransfer', 'restorevouches', 'help', 'koala'];
   let command = message.content.toLowerCase().trim();
   if (command.startsWith('!')) command = command.slice(1).split(/\s+/)[0];
   else command = commands.find(cmd => command === cmd || command.startsWith(`${cmd} `)) || '';
   let args = command ? message.content.slice(command.length + (message.content.startsWith('!') ? 1 : 0)).trim().split(/\s+/) : [];
+
+  if (allowedChannelIds.includes(message.channel.id)) {
+    await updateStickyMessage(message.channel, client, thumbnailUrl);
+  }
+
   if (!commands.includes(command)) return;
   if (!allowedChannelIds.includes(message.channel.id) && !ownerIds.includes(message.author.id)) return;
-  
+
   const cooldown = isOnCooldown(message.author.id, command);
   if (cooldown) {
-    return await safeReply(message, { 
-      embeds: [new EmbedBuilder()
-        .setTitle('Cooldown')
-        .setDescription(`Please wait ${cooldown} seconds before using this command again.`)
-        .setColor('#FF0000')
-        .setTimestamp()
-        .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-      ] 
+    return await safeReply(message, {
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('Cooldown')
+          .setDescription(`Please wait ${cooldown} seconds before using this command again.`)
+          .setColor('#FF0000')
+          .setTimestamp()
+          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+      ]
     }, client, thumbnailUrl);
   }
 
@@ -167,50 +212,53 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
 
   if (command === 'help') {
     const helpEmbed = new EmbedBuilder()
-        .setTitle('Koala Bot Help')
-        .setDescription('Here are all available commands:')
-        .addFields(
-            {
-                name: 'Vouch Commands',
-                value: '```' +
-                    '!vouch <@user|userID> [rating] message - Give someone a vouch\n' +
-                    '!vouches [@user|userID] - Check someone\'s vouches\n' +
-                    '!vouchhistory [@user|userID] - See full vouch history\n' +
-                    '!vouchleaderboard - Top vouched users\n' +
-                    '```'
-            },
-            {
-                name: 'Admin Commands',
-                value: '```' +
-                    '!vouchgive <@userID> rating count message - Give multiple vouches\n' +
-                    '!vouchremove <userID> - Remove vouches\n' +
-                    '!vouchtransfer @from @to - Transfer vouches\n' +
-                    '!restorevouches - Restore vouches from user\n' +
-                    '```'
-            },
-            {
-                name: 'Other',
-                value: '```' +
-                    '!koala - Show bot owner\n' +
-                    '!help - Display this help message\n' +
-                    '```'
-            }
-        )
-        .setColor('#0099FF')
-        .setFooter({ text: 'Need more help? Contact the bot owner' })
-        .setThumbnail(validateThumbnailUrl(thumbnailUrl));
-
+      .setTitle('Koala Bot Help')
+      .setDescription('Here are all available commands:')
+      .addFields(
+        {
+          name: 'Vouch Commands',
+          value: '```' +
+            '!vouch <@user|userID> [message] - Give someone a vouch\n' +
+            '!vouches [@user|userID] - Check someone\'s vouches\n' +
+            '!vouchhistory <@user|userID> - See full vouch history\n' +
+            '!vouchleaderboard - Top vouched users\n' +
+            '```'
+        },
+        {
+          name: 'Admin Commands',
+          value: '```' +
+            '!vouchgive <@user|userID> count message - Give multiple vouches\n' +
+            '!vouchremove <@user|userID> - Remove vouches\n' +
+            '!vouchtransfer <@from> <@to> - Transfer vouches\n' +
+            '!restorevouches - Restore vouches from user\n' +
+            '```'
+        },
+        {
+          name: 'Other',
+          value: '```' +
+            '!koala - Show bot owner\n' +
+            '!help - Display this help message\n' +
+            '```'
+        }
+      )
+      .setColor('#0099FF')
+      .setFooter({ text: 'Need more help? Contact the bot owner' })
+      .setThumbnail(validateThumbnailUrl(thumbnailUrl));
     return await safeReply(message, { embeds: [helpEmbed] }, client, thumbnail);
   }
 
   if (command === 'vouch') {
-    if (args.length < 1) {
+    if (args.length < 1 && !message.mentions.users.first()) {
       const embed = new EmbedBuilder()
         .setTitle('Vouch Command Guide')
-        .setDescription(`How to use !vouch:\n- Syntax: !vouch <@userID> [rating] message\n- <@userID>: Mention or ID of user\n- [rating]: 1 to 5 (optional, defaults to 1)\n- message: Comment (max 500 chars)\n- Attach a screenshot/proof\nExample: !vouch @Koala 5 Trusted gwapo sarap kalami.\n\nMessage ID: \`${generateGuid()}\``)
+        .setDescription(
+          `How to use !vouch:\n- Syntax: !vouch <@user|userID> [message]\n- <@user|userID>: Mention or ID of user\n- [message]: Optional comment (max 500 chars)\n- Attach a screenshot/proof\nExample: !vouch @Koala Trusted gwapo sarap kalami.\n\nMessage ID: \`${generateGuid()}\``
+        )
         .setColor('#FFFF00')
         .setThumbnail(validateThumbnailUrl(thumbnailUrl));
-      return await safeReply(message, { embeds: [embed] }, client, thumbnail);
+      await safeReply(message, { embeds: [embed] }, client, thumbnail);
+      await message.react('❌');
+      return;
     }
 
     let user;
@@ -221,87 +269,75 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       try {
         user = await client.users.fetch(args[0]).catch(() => null);
         if (!user) {
-          return await safeReply(message, { 
-            embeds: [new EmbedBuilder()
-              .setTitle('Error')
-              .setDescription(`Invalid user ID: \`${args[0]}\`. Please provide a valid user mention or ID.`)
-              .setColor('#FF0000')
-              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-            ] 
+          await safeReply(message, {
+            embeds: [
+              new EmbedBuilder()
+                .setTitle('Error')
+                .setDescription(`Invalid user ID: \`${args[0]}\`. Please provide a valid user mention or ID.`)
+                .setColor('#FF0000')
+                .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+            ]
           }, client, thumbnail);
+          await message.react('❌');
+          return;
         }
         args.shift();
       } catch (error) {
-        return await safeReply(message, { 
-          embeds: [new EmbedBuilder()
-            .setTitle('Error')
-            .setDescription(`Invalid user ID. Please provide a valid user mention or ID.`)
-            .setColor('#FF0000')
-            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-          ] 
+        await safeReply(message, {
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Error')
+              .setDescription(`Invalid user ID. Please provide a valid user mention or ID.`)
+              .setColor('#FF0000')
+              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+          ]
         }, client, thumbnail);
+        await message.react('❌');
+        return;
       }
     } else {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`Invalid user input. Please provide a user mention (e.g., @user) or a valid user ID as the first argument.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`Invalid user input. Please provide a user mention (e.g., @user) or a valid user ID as the first argument.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
+      await message.react('❌');
+      return;
     }
 
     if (user.id === message.author.id) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`You can't vouch for yourself.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`You can't vouch for yourself.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
+      await message.react('❌');
+      return;
     }
 
-    let points = 100;
-    if (!isNaN(parseFloat(args[0])) && parseFloat(args[0]) >= 1 && parseFloat(args[0]) <= 5) {
-      points = parseFloat(args[0]) * 100;
-      args.shift();
-    }
-
-    if (isNaN(points) || points < 100 || points > 500) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`Rating must be between 1 and 5.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
-      }, client, thumbnail);
-    }
-
-    const vouchMessage = args.join(' ').substring(0, 500);
-    if (!vouchMessage) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`Message must be non-empty and under 500 characters.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
-      }, client, thumbnail);
-    }
+    const vouchMessage = args.join(' ').substring(0, 500) || 'No comment provided';
 
     const attachment = message.attachments.first();
     if (!attachment) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`No proof/screenshot attached. Please provide a screenshot to verify the vouch's authenticity.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`No proof/screenshot attached. Please provide a screenshot to verify the vouch's authenticity.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
+      await message.react('❌');
+      return;
     }
 
     if (!ownerIds.includes(message.author.id)) {
@@ -312,14 +348,17 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           const remainingSeconds = Math.ceil(vouchCooldownSeconds - timeSinceLastVouch);
           const minutes = Math.floor(remainingSeconds / 60);
           const seconds = remainingSeconds % 60;
-          return await safeReply(message, { 
-            embeds: [new EmbedBuilder()
-              .setTitle('Cooldown Error')
-              .setDescription(`Wait ${minutes}m ${seconds}s before vouching for this user again.`)
-              .setColor('#FF0000')
-              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-            ] 
+          await safeReply(message, {
+            embeds: [
+              new EmbedBuilder()
+                .setTitle('Cooldown Error')
+                .setDescription(`Wait ${minutes}m ${seconds}s before vouching for this user again.`)
+                .setColor('#FF0000')
+                .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+            ]
           }, client, thumbnail);
+          await message.react('❌');
+          return;
         }
       }
     }
@@ -328,80 +367,79 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       const newVouch = new Vouch({
         userId: user.id,
         vouchedBy: message.author.id,
-        points: points,
-        message: vouchMessage
+        points: 1,
+        message: vouchMessage,
       });
       await newVouch.save();
 
-      const stats = await Vouch.aggregate([
-        { $match: { userId: user.id, deleted: false } },
-        { $group: { _id: null, total: { $sum: "$points" }, count: { $sum: 1 } } }
-      ]);
-
-      const totalPoints = stats[0]?.total || 0;
-      const count = stats[0]?.count || 0;
-      const displayRating = Math.min(5.00, (totalPoints / 100) / count || 0).toFixed(2);
+      const count = await Vouch.countDocuments({ userId: user.id, deleted: false });
 
       const embed = new EmbedBuilder()
         .setTitle('Vouch Logged')
         .setDescription(`Vouch for ${user.tag} by ${message.author.tag}`)
         .addFields(
-          { name: 'Rating', value: `${generateStars(points)} ${points/100}/5`, inline: true },
+          { name: 'Vouches', value: `+1 Vouch`, inline: true },
           { name: 'Comment', value: vouchMessage, inline: false },
           { name: 'Vouch ID', value: `\`${newVouch.vouchId}\``, inline: true }
         )
-        .setImage(attachment.url)
         .setColor('#00FF00')
         .setFooter({ text: 'Thank you for using Koala Vouch Bot!' })
         .setThumbnail(validateThumbnailUrl(thumbnailUrl));
 
       await safeReply(message, { embeds: [embed] }, client, thumbnail);
-      
-      const sharedChannel = await client.channels.fetch(notificationChannelId).catch(() => null);
-      if (sharedChannel) {
-        await safeSend(sharedChannel, {
-          embeds: [new EmbedBuilder()
-            .setTitle('Vouch Logged')
-            .setDescription(`Vouch for ${user.tag} by ${message.author.tag}\nRating: ${points/100}/5\nComment: ${vouchMessage}\nVouch ID: \`${newVouch.vouchId}\``)
-            .setImage(attachment.url)
-            .setColor('#00FF00')
-            .setThumbnail(validateThumbnailUrl(thumbnailUrl))]
+
+      const logChannel = await client.channels.fetch(logChannelId).catch(() => null);
+      if (logChannel) {
+        await safeSend(logChannel, {
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Vouch Logged')
+              .setDescription(`Vouch for ${user.tag} by ${message.author.tag}\nVouches: +1\nComment: ${vouchMessage}\nVouch ID: \`${newVouch.vouchId}\``)
+              .setImage(attachment.url)
+              .setColor('#00FF00')
+              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+          ]
         }, client, thumbnail);
       }
+      await message.react('✅');
     } catch (error) {
       console.error('Vouch error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
+      await message.react('❌');
     }
     return;
   }
 
   if (command === 'vouchgive') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Permission Error')
-          .setDescription(`Only bot owners can use this command.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      return await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Permission Error')
+            .setDescription(`Only bot owners can use this command.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
 
-    if (args.length < 4) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Usage Error')
-          .setDescription(`Usage: !vouchgive <@user|userID> rating count message`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+    if (args.length < 3) {
+      return await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Usage Error')
+            .setDescription(`Usage: !vouchgive <@user|userID> count message`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
 
@@ -420,13 +458,10 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Please mention a user or provide a valid user ID.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
     }
 
-    const points = parseFloat(args[0]) * 100;
-    if (isNaN(points) || points < 100 || points > 500) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Rating must be between 1 and 5.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
-
-    const vouchCount = parseInt(args[1]);
+    const vouchCount = parseInt(args[0]);
     if (isNaN(vouchCount) || vouchCount < 1 || vouchCount > 1000) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Vouch count must be 1-1000.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
 
-    const vouchMessage = args.slice(2).join(' ').substring(0, 500);
+    const vouchMessage = args.slice(1).join(' ').substring(0, 500);
     if (!vouchMessage) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('Error').setDescription(`Message must be under 500 characters.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
 
     try {
@@ -434,7 +469,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       const vouches = Array(vouchCount).fill().map(() => ({
         userId: user.id,
         vouchedBy: message.author.id,
-        points: points,
+        points: 1,
         message: vouchMessage,
         timestamp: timestamp,
         vouchId: generateVouchId()
@@ -442,22 +477,15 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
 
       await Vouch.insertMany(vouches);
 
-      const stats = await Vouch.aggregate([
-        { $match: { userId: user.id, deleted: false } },
-        { $group: { _id: null, total: { $sum: "$points" }, count: { $sum: 1 } } }
-      ]);
-
-      const totalPoints = stats[0]?.total || 0;
-      const count = stats[0]?.count || 0;
-      const displayRating = Math.min(5.00, (totalPoints / 100) / count || 0).toFixed(2);
+      const count = await Vouch.countDocuments({ userId: user.id, deleted: false });
 
       const embed = new EmbedBuilder()
         .setTitle('Vouches Added')
         .setDescription(`Added ${vouchCount} vouches at <t:${Math.floor(Date.now() / 1000)}:f>`)
         .addFields(
           { name: 'User', value: user.tag, inline: true },
-          { name: 'Rating', value: `${generateStars(points)} ${points/100}/5 (${vouchCount} vouches)`, inline: true },
-          { name: 'Total Rating', value: `${displayRating}/5`, inline: true },
+          { name: 'Vouches', value: `+${vouchCount}`, inline: true },
+          { name: 'Total Vouches', value: `${count}`, inline: true },
           { name: 'Comment', value: vouchMessage, inline: false }
         )
         .setColor('#00FF00')
@@ -469,22 +497,25 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       const channel = await client.channels.fetch(notificationChannelId).catch(() => null);
       if (channel) {
         await safeSend(channel, {
-          embeds: [new EmbedBuilder()
-            .setTitle('Vouches Added')
-            .setDescription(`Added ${vouchCount} vouches for ${user.tag} by ${message.author.tag}`)
-            .setColor('#00FF00')
-            .setThumbnail(validateThumbnailUrl(thumbnailUrl))]
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Vouches Added')
+              .setDescription(`Added ${vouchCount} vouches for ${user.tag} by ${message.author.tag}`)
+              .setColor('#00FF00')
+              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+          ]
         }, client, thumbnail);
       }
     } catch (error) {
       console.error('Vouchgive error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
@@ -508,21 +539,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       const vouches = await Vouch.find({ userId: user.id, deleted: false }).sort({ timestamp: -1 });
       if (vouches.length === 0) return await safeReply(message, { embeds: [new EmbedBuilder().setTitle('No Vouches').setDescription(`${user.tag} has no vouches.`).setColor('#FF0000').setThumbnail(validateThumbnailUrl(thumbnailUrl))] }, client, thumbnail);
 
-      const stats = await Vouch.aggregate([
-        { $match: { userId: user.id, deleted: false } },
-        { $group: { _id: null, total: { $sum: "$points" }, count: { $sum: 1 } } }
-      ]);
-
-      const totalPoints = stats[0]?.total || 0;
-      const count = stats[0]?.count || 0;
-      const displayRating = Math.min(5.00, (totalPoints / 100) / count || 0).toFixed(2);
+      const count = await Vouch.countDocuments({ userId: user.id, deleted: false });
       const latestVouch = vouches[0];
 
       const embed = new EmbedBuilder()
         .setTitle('Vouch Summary')
         .setDescription(`Vouch details for ${user.tag}`)
         .addFields(
-          { name: 'Rating', value: `${displayRating}/5 (${count} vouches)`, inline: true },
+          { name: 'Vouches', value: `${count}`, inline: true },
           { name: 'Last Vouch', value: `<t:${Math.floor(latestVouch.timestamp.getTime() / 1000)}:R>`, inline: true },
           { name: 'Last Comment', value: `${latestVouch.message.substring(0, 50)}${latestVouch.message.length > 50 ? '...' : ''}`, inline: true }
         )
@@ -533,13 +557,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       await safeReply(message, { embeds: [embed] }, client, thumbnail);
     } catch (error) {
       console.error('Vouches error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
@@ -582,7 +607,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           const vouch = items[i];
           embed.addFields(
             { name: `${i + 1}. By`, value: `<@${vouch.vouchedBy}> on <t:${Math.floor(vouch.timestamp.getTime() / 1000)}:f>`, inline: false },
-            { name: 'Rating', value: `${generateStars(vouch.points)} ${vouch.points/100}/5`, inline: true },
+            { name: 'Vouches', value: `+1`, inline: true },
             { name: 'Message', value: vouch.message || 'No message', inline: false }
           );
         }
@@ -592,13 +617,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       await setupPagination(message, await generateEmbed(vouches, page, totalPages), vouches, itemsPerPage, generateEmbed, client, thumbnail);
     } catch (error) {
       console.error('Vouchhistory error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
@@ -606,13 +632,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
 
   if (command === 'vouchremove') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Permission Error')
-          .setDescription(`Only bot owners can use this command.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      return await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Permission Error')
+            .setDescription(`Only bot owners can use this command.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
 
@@ -648,22 +675,25 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       const logChannel = await client.channels.fetch(logChannelId).catch(() => null);
       if (logChannel) {
         await safeSend(logChannel, {
-          embeds: [new EmbedBuilder()
-            .setTitle('Vouches Removed')
-            .setDescription(`${message.author.tag} removed ${result.modifiedCount} vouches for ${user.tag}`)
-            .setColor('#FF0000')
-            .setThumbnail(validateThumbnailUrl(thumbnailUrl))]
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Vouches Removed')
+              .setDescription(`${message.author.tag} removed ${result.modifiedCount} vouches for ${user.tag}`)
+              .setColor('#FF0000')
+              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+          ]
         }, client, thumbnail);
       }
     } catch (error) {
       console.error('Vouchremove error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
@@ -672,12 +702,6 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
   if (command === 'vouchstats') {
     try {
       const totalVouches = await Vouch.countDocuments({ deleted: false });
-      const stats = await Vouch.aggregate([
-        { $match: { deleted: false } },
-        { $group: { _id: null, total: { $sum: "$points" }, count: { $sum: 1 } } }
-      ]);
-      const avgRating = Math.min(5.00, (stats[0]?.total || 0 / 100) / (stats[0]?.count || 1)).toFixed(2);
-
       const topGiver = await Vouch.aggregate([
         { $match: { deleted: false } },
         { $group: { _id: "$vouchedBy", count: { $sum: 1 } } },
@@ -697,8 +721,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         .setDescription(`System statistics`)
         .setColor('#00FF00')
         .addFields(
-          { name: 'Total Vouches', value: `${totalVouches}`, inline: true },
-          { name: 'Average Rating', value: `${avgRating}/5`, inline: true }
+          { name: 'Total Vouches', value: `${totalVouches}`, inline: true }
         )
         .setThumbnail(validateThumbnailUrl(thumbnailUrl));
 
@@ -715,13 +738,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       await safeReply(message, { embeds: [embed] }, client, thumbnail);
     } catch (error) {
       console.error('Vouchstats error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
@@ -731,8 +755,8 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
     try {
       const topUsers = await Vouch.aggregate([
         { $match: { deleted: false } },
-        { $group: { _id: "$userId", count: { $sum: 1 }, totalPoints: { $sum: "$points" } } },
-        { $sort: { totalPoints: -1, count: -1 } },
+        { $group: { _id: "$userId", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
         { $limit: 50 }
       ]);
 
@@ -755,8 +779,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
         
         for (let i = start; i < Math.min(start + itemsPerPage, users.length); i++) {
           const user = await client.users.fetch(users[i]._id).catch(() => ({ tag: 'Unknown User' }));
-          const rating = Math.min(5.00, (users[i].totalPoints / 100) / users[i].count || 0).toFixed(2);
-          embed.addFields({ name: `${i + 1}.`, value: `${user.tag} - ${rating}/5 (${users[i].count})`, inline: false });
+          embed.addFields({ name: `${i + 1}.`, value: `${user.tag} - ${users[i].count} vouches`, inline: false });
         }
         return embed.setDescription(embed.description + `\nPage ${currentPage}/${totalPages}`);
       };
@@ -764,13 +787,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       await setupPagination(message, await generateEmbed(topUsers, page, totalPages), topUsers, itemsPerPage, generateEmbed, client, thumbnail);
     } catch (error) {
       console.error('Vouchleaderboard error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
@@ -778,13 +802,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
 
   if (command === 'vouchsearch') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Permission Error')
-          .setDescription(`Only bot owners can use this command.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      return await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Permission Error')
+            .setDescription(`Only bot owners can use this command.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
 
@@ -827,7 +852,7 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
           const vouchedUser = await client.users.fetch(vouch.userId).catch(() => ({ tag: 'Unknown User' }));
           embed.addFields(
             { name: `${i + 1}.`, value: `For ${vouchedUser.tag} by ${voucher.tag}`, inline: false },
-            { name: 'Rating', value: `${generateStars(vouch.points)} ${vouch.points/100}/5`, inline: true },
+            { name: 'Vouches', value: `+1`, inline: true },
             { name: 'Message', value: vouch.message || 'No message', inline: false },
             { name: 'Date', value: `<t:${Math.floor(vouch.timestamp.getTime() / 1000)}:f>`, inline: false }
           );
@@ -838,13 +863,14 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       await setupPagination(message, await generateEmbed(vouches, page, totalPages), vouches, itemsPerPage, generateEmbed, client, thumbnail);
     } catch (error) {
       console.error('Vouchsearch error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
@@ -852,24 +878,26 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
 
   if (command === 'vouchtransfer') {
     if (!ownerIds.includes(message.author.id)) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Permission Error')
-          .setDescription(`Only authorized users can use this command.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      return await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Permission Error')
+            .setDescription(`Only authorized users can use this command.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
 
     if (message.mentions.users.size < 2) {
-      return await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Usage Error')
-          .setDescription(`Usage: !vouchtransfer @sourceUser @targetUser`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      return await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Usage Error')
+            .setDescription(`Usage: !vouchtransfer <@sourceUser> <@targetUser>`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
 
@@ -897,33 +925,38 @@ async function handleMessage(message, client, Vouch, allowedChannelIds, ownerIds
       const logChannel = await client.channels.fetch(logChannelId).catch(() => null);
       if (logChannel) {
         await safeSend(logChannel, {
-          embeds: [new EmbedBuilder()
-            .setTitle('Vouch Transferred')
-            .setDescription(`${message.author.tag} transferred ${result.modifiedCount} vouches from ${sourceUser.tag} to ${targetUser.tag}`)
-            .setColor('#00FF00')
-            .setThumbnail(validateThumbnailUrl(thumbnailUrl))]
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Vouch Transferred')
+              .setDescription(`${message.author.tag} transferred ${result.modifiedCount} vouches from ${sourceUser.tag} to ${targetUser.tag}`)
+              .setColor('#FF0000')
+              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+          ]
         }, client, thumbnail);
       }
 
       const notifyChannel = await client.channels.fetch(notificationChannelId).catch(() => null);
       if (notifyChannel) {
         await safeSend(notifyChannel, {
-          embeds: [new EmbedBuilder()
-            .setTitle('Vouch Transfer Notification')
-            .setDescription(`Vouches transferred from ${sourceUser.tag} to ${targetUser.tag}`)
-            .setColor('#00FF00')
-            .setThumbnail(validateThumbnailUrl(thumbnailUrl))]
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Vouch Transfer Notification')
+              .setDescription(`Vouches transferred from ${sourceUser.tag} to ${targetUser.tag}`)
+              .setColor('#00FF00')
+              .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+          ]
         }, client, thumbnail);
       }
     } catch (error) {
       console.error('Vouchtransfer error:', error.message);
-      await safeReply(message, { 
-        embeds: [new EmbedBuilder()
-          .setTitle('Error')
-          .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
-          .setColor('#FF0000')
-          .setThumbnail(validateThumbnailUrl(thumbnailUrl))
-        ] 
+      await safeReply(message, {
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Error')
+            .setDescription(`An error occurred. Please try again later or contact the bot owner.`)
+            .setColor('#FF0000')
+            .setThumbnail(validateThumbnailUrl(thumbnailUrl))
+        ]
       }, client, thumbnail);
     }
     return;
