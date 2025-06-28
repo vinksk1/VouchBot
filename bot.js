@@ -18,7 +18,7 @@ initializeDatabase().then(() => {
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
-  const allowedChannelIds = process.env.ALLOWED_CHANNEL_IDS ? process.env.ALLOWED_CHANNEL_IDS.split(',') : [];
+  const allowedChannelIds = process.env.ALLOWED_CHANNEL_IDS ? process.env.ALLOWED_CHANNEL_IDS.split(',').map(id => id.trim()) : [];
   initializeStickyMessages(client, allowedChannelIds, process.env.THUMBNAIL_URL).catch(err =>
     console.error('Failed to initialize sticky messages:', err.message)
   );
@@ -26,16 +26,21 @@ client.once('ready', () => {
 
 client.on('guildCreate', guild => handleGuildCreate(guild, client, process.env.NOTIFICATION_CHANNEL_ID, process.env.THUMBNAIL_URL));
 
-client.on('messageCreate', message => handleMessage(
-  message,
-  client,
-  Vouch,
-  process.env.ALLOWED_CHANNEL_IDS ? process.env.ALLOWED_CHANNEL_IDS.split(',') : [],
-  process.env.OWNER_IDS ? process.env.OWNER_IDS.split(',') : [],
-  process.env.NOTIFICATION_CHANNEL_ID,
-  process.env.LOG_CHANNEL_ID,
-  parseInt(process.env.VOUCH_COOLDOWN_SECONDS) || 600,
-  process.env.THUMBNAIL_URL
-));
+client.on('messageCreate', message => {
+  const allowedChannelIds = process.env.ALLOWED_CHANNEL_IDS ? process.env.ALLOWED_CHANNEL_IDS.split(',').map(id => id.trim()) : [];
+  if (!allowedChannelIds.includes(message.channel.id)) return;
+
+  handleMessage(
+    message,
+    client,
+    Vouch,
+    allowedChannelIds,
+    process.env.OWNER_IDS ? process.env.OWNER_IDS.split(',') : [],
+    process.env.NOTIFICATION_CHANNEL_ID,
+    process.env.LOG_CHANNEL_ID,
+    parseInt(process.env.VOUCH_COOLDOWN_SECONDS) || 600,
+    process.env.THUMBNAIL_URL
+  );
+});
 
 process.on('unhandledRejection', error => console.error('Uncaught Promise Rejection:', error.message));
